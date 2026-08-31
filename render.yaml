@@ -1,11 +1,19 @@
 services:
   - type: web
     name: nifty-session-cop
-    runtime: static
+    runtime: node
+    plan: free
     buildCommand: npm ci && npm run build
-    staticPublishPath: dist
-    pullRequestPreviewsEnabled: false
-    headers:
-      - path: /*
-        name: Cache-Control
-        value: public, max-age=60
+    startCommand: npm start
+    healthCheckPath: /health.txt
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: ANGEL_API_KEY
+        sync: false
+      - key: ANGEL_CLIENT_ID
+        sync: false
+      - key: ANGEL_PASSWORD
+        sync: false
+      - key: ANGEL_TOTP_SECRET
+        sync: false

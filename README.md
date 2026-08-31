@@ -1,37 +1,44 @@
 # Nifty Session Cop
 
-Intraday **risk cop** for Nifty: opening-range window, **1R** day stop, **+2R** lock, flat before **CAS**. Not a signal service.
+Intraday **risk cop** for Nifty: opening-range window, **1R** day stop, **+2R** lock, flat before **CAS**.
 
-## Rules the UI enforces
+Live LTP comes from **Angel One SmartAPI** on the server (env vars). Candles from Angel historical, Yahoo fallback. Chart is **not** TradingView (NSE:NIFTY is blocked on their free embed).
 
-- Nifty only (TradingView `NSE:NIFTY`, 5-minute)
+## Rules
+
+- Nifty only, 5-minute
 - **09:15–09:30** mark opening range — no orders
-- **09:30–11:30** only window: 5-minute **close** beyond OR, stop = other side of the range
-- **Paper auto:** Start auto after OR (or let it mark OR from delayed ^NSEI). Fills journal only. **Not a broker.**
+- **09:30–11:30** window: 5-minute close beyond OR
+- Paper auto journals only — **not a broker**
 - After **11:30** no new risk
-- After **11:30** no new risk
-- **15:15–15:40 CAS** banner: do not hunt stocks or open Nifty risk
+- **15:15–15:40 CAS** — no new risk
 - One attempt, −1R / +2R day lock
-- Skip tiny OR (&lt; 25 pts) or 1R in ₹ above your cap
-- Journal in **R**, not screenshots
 
 ## Local
 
 ```bash
 npm install
+npm run dev:server
 npm run dev
 ```
 
-## GitHub → Render (static, free)
+Open Vite URL. API is proxied to port 8787.
 
-1. Push this repo to GitHub.
-2. [Render](https://render.com) → **New → Static Site** → connect the repo.
-3. Build: `npm ci && npm run build`
-4. Publish directory: `dist`
-5. [UptimeRobot](https://uptimerobot.com) HTTP monitor every 5 minutes: `https://YOUR-SITE.onrender.com/health.txt`
+## GitHub → Render (**Web Service**, not Static)
 
-`render.yaml` is included if you use Render Blueprint.
+Static Site **cannot** use `ANGEL_*` at runtime. Create / switch to **Web Service**:
+
+1. Connect `Sabari-2004/nifty-session-cop` (sync the fork first).
+2. Build: `npm ci && npm run build`
+3. Start: `npm start`
+4. Health: `/health.txt`
+5. Environment secrets: `ANGEL_API_KEY`, `ANGEL_CLIENT_ID`, `ANGEL_PASSWORD`, `ANGEL_TOTP_SECRET`
+
+Check (no secrets): `https://YOUR-SITE.onrender.com/api/health`  
+Should show `"angelConfigured": true` if env is on **this** service.
+
+UptimeRobot: `https://YOUR-SITE.onrender.com/health.txt`
 
 ## Disclaimer
 
-Educational process tool. Markets can lose money. Options and auctions can exceed a planned 1R if you override the locks.
+Educational process tool. Markets can lose money. Paper fills are not exchange orders.
