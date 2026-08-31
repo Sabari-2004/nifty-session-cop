@@ -138,6 +138,69 @@ textarea {
 
 .chart-box {
   height: 480px;
+  width: 100%;
+  border: 0;
+  display: block;
+}
+
+.auto-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #0c1210;
+}
+
+.auto-bar.on {
+  box-shadow: inset 0 0 0 1px #1e4a38;
+}
+
+.bot-status {
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  font-size: 0.82rem;
+}
+
+.bot-status.armed {
+  color: var(--green);
+}
+.bot-status.scan {
+  color: var(--amber);
+}
+.bot-status.flat {
+  color: var(--muted);
+}
+.bot-status.in {
+  color: var(--blue);
+}
+
+.tape {
+  max-height: 160px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 14px 12px;
+  font-family: ui-monospace, "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: #9dccb8;
+  background: #080c0a;
+}
+
+.tape li {
+  list-style: none;
+}
+
+.paper-warn {
+  border: 1px solid #3d5a2e;
+  background: #10180f;
+  color: #c8e8c0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  font-size: 0.88rem;
 }
 
 .pad {

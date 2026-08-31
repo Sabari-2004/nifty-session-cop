@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./components/Chart";
 import { atmLabel } from "./lib/atm";
-import { evaluate, num, type DayState } from "./lib/gates";
+import { evaluate, num, type DayState, type Verdict } from "./lib/gates";
 import {
   loadJournal,
   saveJournal,
@@ -9,9 +9,20 @@ import {
   type JournalTrade,
   type Side,
 } from "./lib/journal";
-import { PHASE_COPY, readIst, sessionPhase } from "./lib/session";
+import { fetchNifty, lastClosedBar, orFromBars } from "./lib/quotes";
+import { PHASE_COPY, readIst, sessionPhase, type SessionPhase } from "./lib/session";
 
 const SETTINGS_KEY = "nifty-session-cop.day.v1";
+const AUTO_KEY = "nifty-session-cop.auto.v1";
+
+type PaperPos = {
+  side: Side;
+  entry: number;
+  stop: number;
+  target: number;
+};
+
+type LogLine = { id: string; text: string };
 
 function emptyDay(dateKey: string): DayState {
   return {
@@ -39,6 +50,12 @@ function loadDay(dateKey: string): DayState {
   }
 }
 
+function rMultiple(side: Side, entry: number, stop: number, exit: number): number {
+  const risk = Math.abs(entry - stop);
+  if (risk <= 0) return 0;
+  return side === "LONG" ? (exit - entry) / risk : (entry - exit) / risk;
+}
+
 export default function App() {
   const [clock, setClock] = useState(() => readIst());
   const [day, setDay] = useState<DayState>(() => loadDay(readIst().dateKey));
@@ -48,6 +65,25 @@ export default function App() {
   const [exitPx, setExitPx] = useState("");
   const [followed, setFollowed] = useState(true);
   const [notes, setNotes] = useState("");
+  const [autoOn, setAutoOn] = useState(() => localStorage.getItem(AUTO_KEY) === "1");
+  const [lastPx, setLastPx] = useState<number | null>(null);
+  const [feed, setFeed] = useState("No quote yet");
+  const [paper, setPaper] = useState<PaperPos | null>(null);
+  const [logs, setLogs] = useState<LogLine[]>([]);
+
+  const dayRef = useRef(day);
+  const paperRef = useRef(paper);
+  const journalRef = useRef(journal);
+  const autoRef = useRef(autoOn);
+  dayRef.current = day;
+  paperRef.current = paper;
+  journalRef.current = journal;
+  autoRef.current = autoOn;
+
+  const log = useCallback((text: string) => {
+    const line = { id: crypto.randomUUID(), text: `${readIst().display}  ${text}` };
+    setLogs((prev) => [line, ...prev].slice(0, 40));
+  }, []);
 
   useEffect(() => {
     const t = window.setInterval(() => setClock(readIst()), 1000);
@@ -57,6 +93,7 @@ export default function App() {
   useEffect(() => {
     setDay((d) => {
       if (d.dateKey === clock.dateKey) return d;
+      setPaper(null);
       return emptyDay(clock.dateKey);
     });
   }, [clock.dateKey]);
@@ -65,12 +102,16 @@ export default function App() {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(day));
   }, [day]);
 
+  useEffect(() => {
+    localStorage.setItem(AUTO_KEY, autoOn ? "1" : "0");
+  }, [autoOn]);
+
   const phase = sessionPhase(clock);
   const copy = PHASE_COPY[phase];
   const verdict = useMemo(() => evaluate(day, phase), [day, phase]);
   const summary = useMemo(() => stats(journal), [journal]);
-  const spotN = num(day.spot);
-  const label = atmLabel(spotN ?? 0, side);
+  const spotN = num(day.spot) ?? lastPx;
+  const label = atmLabel(spotN ?? 0, paper?.side ?? side);
 
   const phaseClass =
     phase === "window" && verdict.allowed
@@ -83,16 +124,137 @@ export default function App() {
     setDay((d) => ({ ...d, ...p }));
   }
 
+  function pushJournal(row: JournalTrade) {
+    const next = [row, ...journalRef.current];
+    journalRef.current = next;
+    setJournal(next);
+    saveJournal(next);
+  }
+
+  function closePaper(exit: number, why: string, d: DayState, pos: PaperPos) {
+    const r = Number(rMultiple(pos.side, pos.entry, pos.stop, exit).toFixed(2));
+    pushJournal({
+      id: crypto.randomUUID(),
+      dateKey: d.dateKey,
+      side: pos.side,
+      entry: pos.entry,
+      stop: pos.stop,
+      exit,
+      r,
+      followedPlan: true,
+      notes: `PAPER AUTO · ${why}`,
+      createdAt: new Date().toISOString(),
+    });
+    setPaper(null);
+    paperRef.current = null;
+    const realized = Number((d.realizedR + r).toFixed(2));
+    const nextDay = {
+      ...d,
+      openTrade: false,
+      usedTrade: true,
+      realizedR: realized,
+    };
+    dayRef.current = nextDay;
+    setDay(nextDay);
+    log(`FLAT ${pos.side} @ ${exit.toFixed(1)} · ${r.toFixed(2)}R · ${why}`);
+  }
+
+  function openPaper(nextSide: Side, fill: number, v: Verdict, d: DayState) {
+    const stop = nextSide === "LONG" ? v.stopLong : v.stopShort;
+    const target = nextSide === "LONG" ? v.t2Long : v.t2Short;
+    if (stop == null || target == null) return;
+    const pos: PaperPos = { side: nextSide, entry: fill, stop, target };
+    setPaper(pos);
+    paperRef.current = pos;
+    setSide(nextSide);
+    const nextDay = { ...d, openTrade: true, usedTrade: true, spot: String(fill) };
+    dayRef.current = nextDay;
+    setDay(nextDay);
+    log(
+      `FILL ${nextSide} @ ${fill.toFixed(1)} · SL ${stop.toFixed(1)} · TG ${target.toFixed(1)} · PAPER`,
+    );
+  }
+
+  useEffect(() => {
+    let alive = true;
+    async function tick() {
+      if (!autoRef.current || !alive) return;
+      const d = dayRef.current;
+      const ph: SessionPhase = sessionPhase(readIst());
+      try {
+        const q = await fetchNifty();
+        if (!alive) return;
+        setLastPx(q.last);
+        setFeed(q.source);
+        setDay((cur) =>
+          cur.spot.trim() ? cur : { ...cur, spot: String(Math.round(q.last * 10) / 10) },
+        );
+
+        const or = orFromBars(q.bars, d.dateKey);
+        if (or && !d.orHigh.trim() && !d.orLow.trim() && ph !== "mark_or") {
+          const next = {
+            ...dayRef.current,
+            orHigh: or.high.toFixed(1),
+            orLow: or.low.toFixed(1),
+          };
+          dayRef.current = next;
+          setDay(next);
+          log(`OR marked from 09:15–09:30 bars  ${or.high.toFixed(1)} / ${or.low.toFixed(1)}`);
+        }
+
+        const v = evaluate(dayRef.current, ph);
+        const pos = paperRef.current;
+
+        if (pos) {
+          const hitSl =
+            pos.side === "LONG" ? q.last <= pos.stop : q.last >= pos.stop;
+          const hitTg =
+            pos.side === "LONG" ? q.last >= pos.target : q.last <= pos.target;
+          if (hitSl) {
+            closePaper(pos.stop, "stop", dayRef.current, pos);
+            return;
+          }
+          if (hitTg) {
+            closePaper(pos.target, "target 1.75R", dayRef.current, pos);
+            return;
+          }
+          if (ph === "no_new" || ph === "cas" || ph === "closed" || ph === "weekend") {
+            closePaper(q.last, "time stop / session end", dayRef.current, pos);
+          }
+          return;
+        }
+
+        if (!v.allowed) return;
+        const bar = lastClosedBar(q.bars);
+        if (!bar) return;
+        const high = num(dayRef.current.orHigh);
+        const low = num(dayRef.current.orLow);
+        if (high == null || low == null) return;
+        if (bar.close > high) {
+          openPaper("LONG", bar.close, v, dayRef.current);
+        } else if (bar.close < low) {
+          openPaper("SHORT", bar.close, v, dayRef.current);
+        }
+      } catch {
+        if (alive) setFeed("Quote blocked (CORS). Keep tab open; retrying.");
+      }
+    }
+
+    const id = window.setInterval(() => void tick(), 20000);
+    void tick();
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [autoOn, log]);
+
   function onJournal(e: FormEvent) {
     e.preventDefault();
     const ent = num(entry);
     const ex = num(exitPx);
     const stop = side === "LONG" ? verdict.stopLong : verdict.stopShort;
     if (ent == null || ex == null || stop == null) return;
-    const risk = Math.abs(ent - stop);
-    if (risk <= 0) return;
-    const r =
-      side === "LONG" ? (ex - ent) / risk : (ent - ex) / risk;
+    const r = rMultiple(side, ent, stop, ex);
     const row: JournalTrade = {
       id: crypto.randomUUID(),
       dateKey: day.dateKey,
@@ -105,25 +267,39 @@ export default function App() {
       notes,
       createdAt: new Date().toISOString(),
     };
-    const next = [row, ...journal];
-    setJournal(next);
-    saveJournal(next);
+    pushJournal(row);
     patch({
       openTrade: false,
       usedTrade: true,
       realizedR: Number((day.realizedR + row.r).toFixed(2)),
     });
+    setPaper(null);
     setEntry("");
     setExitPx("");
     setNotes("");
   }
+
+  const botClass = paper
+    ? "in"
+    : autoOn && verdict.allowed
+      ? "armed"
+      : autoOn
+        ? "scan"
+        : "flat";
+  const botLabel = paper
+    ? `IN ${paper.side} · PAPER`
+    : autoOn && verdict.allowed
+      ? "ARMED · WAITING 5m CLOSE"
+      : autoOn
+        ? "SCANNING · GATES CLOSED"
+        : "AUTO OFF";
 
   return (
     <div className="app">
       <header className="top">
         <div className="brand">
           <h1>Nifty Session Cop</h1>
-          <p>One index. One R. Flat before CAS. Not a signal bot.</p>
+          <p>Paper auto on Nifty only. Not a broker. Chart locked to NSE:NIFTY.</p>
         </div>
         <div className="clock">
           <div className="time">{clock.display}</div>
@@ -131,21 +307,51 @@ export default function App() {
         </div>
       </header>
 
+      <div className="paper-warn">
+        AUTO is <strong>paper</strong> in this browser. It does not send orders to
+        Zerodha / Groww / any exchange. Delayed index quotes. Same gates: one
+        trade, 1R, flat into CAS.
+      </div>
+
       {phase === "cas" && (
         <div className="cas">
-          CAS is live (cash CTS ended ~15:15; auction into ~15:35). Do not
-          hunt F&amp;O stocks or open new Nifty risk. Closing auction is
-          settlement, not a 3% scalp.
+          CAS is live. Auto will not open risk. Flatten if still in a paper
+          trade.
         </div>
       )}
 
       <div className="grid">
         <section className="panel">
-          <h2>NSE:NIFTY · 5 MIN · TRADINGVIEW</h2>
+          <h2>NSE:NIFTY · 5 MIN · SYMBOL LOCKED</h2>
           <Chart />
         </section>
 
         <section className="panel">
+          <div className={`auto-bar ${autoOn ? "on" : ""}`}>
+            <div>
+              <div className={`bot-status ${botClass}`}>{botLabel}</div>
+              <div style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 4 }}>
+                Last {lastPx != null ? lastPx.toFixed(1) : "—"} · {feed}
+              </div>
+            </div>
+            <button
+              className={autoOn ? "danger" : "primary"}
+              type="button"
+              onClick={() => {
+                setAutoOn((v) => !v);
+                log(autoOn ? "AUTO OFF" : "AUTO ON · paper engine");
+              }}
+            >
+              {autoOn ? "Stop auto" : "Start auto (paper)"}
+            </button>
+          </div>
+          <ul className="tape">
+            {logs.length === 0 && <li>Engine idle. Start auto after OR is set (or let it mark OR).</li>}
+            {logs.map((l) => (
+              <li key={l.id}>{l.text}</li>
+            ))}
+          </ul>
+
           <div className={`verdict ${verdict.allowed ? "ok" : "no"}`}>
             <p className="code">{verdict.code}</p>
             <p style={{ margin: "6px 0 0", color: "var(--muted)" }}>
@@ -181,7 +387,7 @@ export default function App() {
             </div>
             <div className="row" style={{ marginTop: 10 }}>
               <div>
-                <label>SPOT (FOR ATM LABEL)</label>
+                <label>SPOT / LAST</label>
                 <input
                   inputMode="decimal"
                   value={day.spot}
@@ -237,9 +443,10 @@ export default function App() {
             </div>
 
             <div className="atm">{label}</div>
-            {!verdict.allowed && (
+            {paper && (
               <div className="locked-note">
-                Order button stays locked until every gate passes.
+                Paper {paper.side} {paper.entry.toFixed(1)} → SL {paper.stop.toFixed(1)}{" "}
+                TG {paper.target.toFixed(1)}
               </div>
             )}
 
@@ -249,23 +456,28 @@ export default function App() {
                 disabled={!verdict.allowed}
                 onClick={() => patch({ openTrade: true, usedTrade: true })}
               >
-                Mark in (locks book)
+                Mark in (manual lock)
               </button>
               <button
                 disabled={!day.openTrade}
-                onClick={() => patch({ openTrade: false })}
+                onClick={() => {
+                  patch({ openTrade: false });
+                  setPaper(null);
+                }}
               >
                 Still flat / aborted
               </button>
               <button
                 className="danger"
-                onClick={() =>
+                onClick={() => {
                   patch({
                     realizedR: -1,
                     openTrade: false,
                     usedTrade: true,
-                  })
-                }
+                  });
+                  setPaper(null);
+                  log("Manual −1R lock");
+                }}
               >
                 Hit −1R (lock day)
               </button>
@@ -306,7 +518,14 @@ export default function App() {
                   ? verdict.stopLong ?? "—"
                   : verdict.stopShort ?? "—"}
               </label>
-              <input disabled value={side === "LONG" ? (verdict.stopLong ?? "") : (verdict.stopShort ?? "")} />
+              <input
+                disabled
+                value={
+                  side === "LONG"
+                    ? (verdict.stopLong ?? "")
+                    : (verdict.stopShort ?? "")
+                }
+              />
             </div>
             <div>
               <label>EXIT</label>
@@ -407,11 +626,9 @@ export default function App() {
       </section>
 
       <p className="foot">
-        Process tool only — not SEBI-registered advice, not a broker, not a
-        profit guarantee. TradingView chart is an official embed. Journal lives
-        in this browser (localStorage). UptimeRobot: ping{" "}
-        <code>/health.txt</code> after Render deploy. If last-20 average R is
-        ≤ 0 after costs, kill the rules — do not add indicators.
+        Not SEBI advice. Paper auto is not a live order. TradingView iframe is
+        locked to NSE:NIFTY. Journal is localStorage. UptimeRobot:{" "}
+        <code>/health.txt</code>.
       </p>
     </div>
   );

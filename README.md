@@ -7,6 +7,8 @@ Intraday **risk cop** for Nifty: opening-range window, **1R** day stop, **+2R** 
 - Nifty only (TradingView `NSE:NIFTY`, 5-minute)
 - **09:15–09:30** mark opening range — no orders
 - **09:30–11:30** only window: 5-minute **close** beyond OR, stop = other side of the range
+- **Paper auto:** Start auto after OR (or let it mark OR from delayed ^NSEI). Fills journal only. **Not a broker.**
+- After **11:30** no new risk
 - After **11:30** no new risk
 - **15:15–15:40 CAS** banner: do not hunt stocks or open Nifty risk
 - One attempt, −1R / +2R day lock

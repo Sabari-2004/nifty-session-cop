@@ -1,52 +1,29 @@
-import { useEffect, useRef } from "react";
-
-const SCRIPT = "https://s3.tradingview.com/tv.js";
-
 export default function Chart() {
-  const host = useRef<HTMLDivElement>(null);
+  const params = new URLSearchParams({
+    symbol: "NSE:NIFTY",
+    interval: "5",
+    timezone: "Asia/Kolkata",
+    theme: "dark",
+    style: "1",
+    locale: "en",
+    toolbarbg: "07090c",
+    hideideas: "1",
+    hide_legend: "0",
+    hide_top_toolbar: "0",
+    hidesidetoolbar: "0",
+    allow_symbol_change: "0",
+    symboledit: "0",
+    saveimage: "0",
+    withdateranges: "1",
+    studies: "[]",
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    const id = `tv_${Math.random().toString(36).slice(2)}`;
-    if (host.current) host.current.id = id;
-
-    const boot = () => {
-      if (cancelled || !window.TradingView) return;
-      new window.TradingView.widget({
-        autosize: true,
-        symbol: "NSE:NIFTY",
-        interval: "5",
-        timezone: "Asia/Kolkata",
-        theme: "dark",
-        style: "1",
-        locale: "en",
-        hide_top_toolbar: false,
-        hide_legend: false,
-        allow_symbol_change: false,
-        container_id: id,
-        studies: [],
-      });
-    };
-
-    if (window.TradingView) {
-      boot();
-    } else {
-      const existing = document.querySelector(`script[src="${SCRIPT}"]`);
-      if (existing) {
-        existing.addEventListener("load", boot);
-      } else {
-        const s = document.createElement("script");
-        s.src = SCRIPT;
-        s.async = true;
-        s.onload = boot;
-        document.body.appendChild(s);
-      }
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return <div ref={host} className="chart-box" />;
+  return (
+    <iframe
+      className="chart-box"
+      title="Nifty 50 · 5 minute"
+      src={`https://www.tradingview.com/widgetembed/?${params.toString()}`}
+      referrerPolicy="origin-when-cross-origin"
+    />
+  );
 }
