@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { getNifty, status } from "./server/nifty.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.join(__dirname, "..");
+const root = __dirname;
 const dist = path.join(root, "dist");
 const PORT = Number(process.env.PORT) || 8787;
 
@@ -29,7 +29,8 @@ function send(res, code, body, type = "application/json; charset=utf-8") {
 
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
-  if (urlPath === "/") urlPath = "/index.html";
+  if (urlPath === "/" || urlPath === "") urlPath = "index.html";
+  else urlPath = urlPath.replace(/^\/+/, "");
   const file = path.normalize(path.join(dist, urlPath));
   if (!file.startsWith(dist)) {
     send(res, 403, "forbidden", "text/plain");
@@ -71,5 +72,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`nifty-session-cop listening on ${PORT}`);
+  console.log(`nifty-session-cop listening on ${PORT} dist=${dist} exists=${fs.existsSync(dist)}`);
 });
