@@ -9,7 +9,7 @@ import {
   type JournalTrade,
   type Side,
 } from "./lib/journal";
-import { fetchNifty, lastClosedBar, orFromBars } from "./lib/quotes";
+import { fetchNifty, lastClosedBar, orFromBars, type Bar } from "./lib/quotes";
 import { PHASE_COPY, readIst, sessionPhase, type SessionPhase } from "./lib/session";
 
 const SETTINGS_KEY = "nifty-session-cop.day.v1";
@@ -68,6 +68,8 @@ export default function App() {
   const [autoOn, setAutoOn] = useState(() => localStorage.getItem(AUTO_KEY) === "1");
   const [lastPx, setLastPx] = useState<number | null>(null);
   const [feed, setFeed] = useState("No quote yet");
+  const [bars, setBars] = useState<Bar[]>([]);
+  const [angelOn, setAngelOn] = useState(false);
   const [paper, setPaper] = useState<PaperPos | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
 
@@ -175,21 +177,46 @@ export default function App() {
     );
   }
 
+  const quoteRef = useRef<{ last: number; bars: Bar[] } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    async function pull() {
+      try {
+        const [q, h] = await Promise.all([
+          fetchNifty(),
+          fetch("/api/health").then((r) => r.json()).catch(() => null),
+        ]);
+        if (!alive) return;
+        setLastPx(q.last);
+        setFeed(q.source);
+        setBars(q.bars);
+        setAngelOn(Boolean(q.angel || h?.angelConfigured));
+        quoteRef.current = { last: q.last, bars: q.bars };
+        setDay((cur) =>
+          cur.spot.trim() ? cur : { ...cur, spot: String(Math.round(q.last * 10) / 10) },
+        );
+      } catch {
+        if (alive) setFeed("No server feed. Deploy as Web Service (not Static).");
+      }
+    }
+    void pull();
+    const id = window.setInterval(() => void pull(), 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
   useEffect(() => {
     let alive = true;
     async function tick() {
       if (!autoRef.current || !alive) return;
       const d = dayRef.current;
+      const q = quoteRef.current;
+      if (!q) return;
       const ph: SessionPhase = sessionPhase(readIst());
       try {
-        const q = await fetchNifty();
-        if (!alive) return;
-        setLastPx(q.last);
-        setFeed(q.source);
-        setDay((cur) =>
-          cur.spot.trim() ? cur : { ...cur, spot: String(Math.round(q.last * 10) / 10) },
-        );
-
         const or = orFromBars(q.bars, d.dateKey);
         if (or && !d.orHigh.trim() && !d.orLow.trim() && ph !== "mark_or") {
           const next = {
@@ -236,11 +263,11 @@ export default function App() {
           openPaper("SHORT", bar.close, v, dayRef.current);
         }
       } catch {
-        if (alive) setFeed("Quote blocked (CORS). Keep tab open; retrying.");
+        /* keep scanning */
       }
     }
 
-    const id = window.setInterval(() => void tick(), 20000);
+    const id = window.setInterval(() => void tick(), 5000);
     void tick();
     return () => {
       alive = false;
@@ -299,7 +326,10 @@ export default function App() {
       <header className="top">
         <div className="brand">
           <h1>Nifty Session Cop</h1>
-          <p>Paper auto on Nifty only. Not a broker. Chart locked to NSE:NIFTY.</p>
+          <p>
+            Paper auto on Nifty. Live LTP via Angel if env is on the{" "}
+            <strong>Web Service</strong>. Not a broker.
+          </p>
         </div>
         <div className="clock">
           <div className="time">{clock.display}</div>
@@ -308,9 +338,9 @@ export default function App() {
       </header>
 
       <div className="paper-warn">
-        AUTO is <strong>paper</strong> in this browser. It does not send orders to
-        Zerodha / Groww / any exchange. Delayed index quotes. Same gates: one
-        trade, 1R, flat into CAS.
+        AUTO is <strong>paper</strong>. Angel env on a <strong>Static Site</strong> is
+        ignored — convert to a Web Service. Same gates: one trade, 1R, flat into
+        CAS.
       </div>
 
       {phase === "cas" && (
@@ -322,8 +352,12 @@ export default function App() {
 
       <div className="grid">
         <section className="panel">
-          <h2>NSE:NIFTY · 5 MIN · SYMBOL LOCKED</h2>
-          <Chart />
+          <h2>NIFTY 50 · 5 MIN · LIVE FEED</h2>
+          <Chart
+            bars={bars}
+            orHigh={num(day.orHigh)}
+            orLow={num(day.orLow)}
+          />
         </section>
 
         <section className="panel">
@@ -332,6 +366,7 @@ export default function App() {
               <div className={`bot-status ${botClass}`}>{botLabel}</div>
               <div style={{ color: "var(--muted)", fontSize: "0.8rem", marginTop: 4 }}>
                 Last {lastPx != null ? lastPx.toFixed(1) : "—"} · {feed}
+                {angelOn ? " · Angel env present" : " · Angel not on this process"}
               </div>
             </div>
             <button
@@ -626,9 +661,8 @@ export default function App() {
       </section>
 
       <p className="foot">
-        Not SEBI advice. Paper auto is not a live order. TradingView iframe is
-        locked to NSE:NIFTY. Journal is localStorage. UptimeRobot:{" "}
-        <code>/health.txt</code>.
+        UptimeRobot: <code>/health.txt</code>. Check Angel:{" "}
+        <code>/api/health</code> (shows configured yes/no, never secrets).
       </p>
     </div>
   );
