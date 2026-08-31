@@ -30,7 +30,9 @@ const TINY_OR = 25;
 const TARGET_R = 1.75;
 
 export function num(v: string): number | null {
-  const n = Number(v);
+  const t = v.trim();
+  if (!t) return null;
+  const n = Number(t);
   return Number.isFinite(n) ? n : null;
 }
 
